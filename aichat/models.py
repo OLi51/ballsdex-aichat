@@ -47,7 +47,10 @@ class AIChatSettings(models.Model):
         help_text="System prompt describing the bot's personality and how it should behave.",
     )
     max_history = models.PositiveIntegerField(
-        default=20, help_text="How many past messages to keep as context per channel."
+        default=12,
+        help_text="How many past messages to send as context per reply (only counts actual bot "
+        "conversations, so 12 ≈ 6 back-and-forth exchanges). Higher means better memory but more tokens "
+        "per reply — the main cost lever if you move to a paid tier.",
     )
     requests_per_minute = models.PositiveIntegerField(
         default=12,
@@ -58,8 +61,9 @@ class AIChatSettings(models.Model):
     allowed_channel_ids = models.TextField(
         blank=True,
         default="",
-        help_text="Semicolon-separated channel IDs where the bot may chat. Leave empty to allow it in any "
-        "channel it can see (still only replies when mentioned or DMed).",
+        help_text="Semicolon-separated SERVER channel IDs where the bot may chat. Leave empty to allow any "
+        "channel it can see. Direct messages always work regardless of this list — it only restricts server "
+        "channels. (The bot still only replies when mentioned or DMed.)",
         validators=(COLON_IDS_RE,),
     )
 

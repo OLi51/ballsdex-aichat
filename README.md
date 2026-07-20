@@ -27,7 +27,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.1.2"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.0"
 path = "aichat"
 enabled = true
 ```
@@ -42,7 +42,8 @@ Then `docker compose build` and run migrations as usual (they run automatically 
 3. Optionally edit `personality` to give the bot a voice. You do **not** need to tell it its own name
    or what's collected — that's injected automatically from your core settings. Just describe the
    personality.
-4. Optionally restrict it to specific channels with `allowed_channel_ids`.
+4. Optionally restrict it to specific **server** channels with `allowed_channel_ids`. Direct messages
+   always work regardless of that list.
 
 ### Choosing a model (and fallbacks)
 

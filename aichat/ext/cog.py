@@ -87,6 +87,13 @@ async def _send_reply(sender, text: str, attachment_path):
         await sender(chunk, **kwargs)
 
 
+def _friendly_error(exc: Exception) -> str:
+    # 429 = rate limit / daily quota exhausted (common on a shared free-tier key across servers)
+    if getattr(exc, "code", None) == 429:
+        return "I've hit my usage limit for the moment — give me a little while and try again!"
+    return "Something went wrong on my end trying to think of a reply. Try again in a bit?"
+
+
 class AIChat(commands.Cog):
     """
     A chatty companion cog: mention the bot or DM it to talk, powered by Gemini.
@@ -153,12 +160,21 @@ class AIChat(commands.Cog):
         if keep_ids:
             await ChatMessage.objects.filter(channel_id=channel_id).exclude(pk__in=keep_ids).adelete()
 
-    async def _respond(self, channel: discord.abc.Messageable, channel_id: int, author: discord.abc.User, text: str):
+    async def _respond(
+        self,
+        channel: discord.abc.Messageable,
+        channel_id: int,
+        author: discord.abc.User,
+        text: str,
+        is_dm: bool = False,
+    ):
         config = await self._get_settings()
         if not config:
             return
 
-        if config.allowed_channels and channel_id not in config.allowed_channels:
+        # The channel whitelist only restricts server channels; DMs are always allowed (the user
+        # explicitly chose to message the bot directly).
+        if not is_dm and config.allowed_channels and channel_id not in config.allowed_channels:
             return
 
         if not text.strip():
@@ -175,7 +191,7 @@ class AIChat(commands.Cog):
             return
         except Exception as e:
             log.error(f"Gemini chat request failed: {e}")
-            await channel.send("Something went wrong on my end trying to think of a reply. Try again in a bit?")
+            await channel.send(_friendly_error(e))
             return
 
         await self._remember(channel_id, None, ChatMessage.Role.ASSISTANT, reply)
@@ -199,7 +215,7 @@ class AIChat(commands.Cog):
             content = content.replace(pattern, "")
         content = content.strip()
 
-        await self._respond(message.channel, message.channel.id, message.author, content)
+        await self._respond(message.channel, message.channel.id, message.author, content, is_dm=is_dm)
 
     @app_commands.command(name="chat")
     @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
@@ -219,7 +235,8 @@ class AIChat(commands.Cog):
             return
 
         channel_id = interaction.channel_id
-        if config.allowed_channels and channel_id not in config.allowed_channels:
+        is_dm = interaction.guild is None
+        if not is_dm and config.allowed_channels and channel_id not in config.allowed_channels:
             await interaction.followup.send("I can't chat in this channel.", ephemeral=True)
             return
 
@@ -235,7 +252,7 @@ class AIChat(commands.Cog):
             return
         except Exception as e:
             log.error(f"Gemini chat request failed: {e}")
-            await interaction.followup.send("Something went wrong trying to think of a reply. Try again in a bit?")
+            await interaction.followup.send(_friendly_error(e))
             return
 
         await self._remember(channel_id, None, ChatMessage.Role.ASSISTANT, reply)

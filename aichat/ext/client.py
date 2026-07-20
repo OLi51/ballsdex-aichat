@@ -13,6 +13,19 @@ MAX_TOOL_ROUNDS = 4
 FALLBACK_REPLY = "I got a bit tangled up thinking about that one — mind trying again?"
 
 
+def model_supports_search(model: str) -> bool:
+    """
+    Heuristic for whether a model can use Google Search grounding on the free tier.
+
+    Search grounding is available on Gemini 1.5 and 2.x; on Gemini 3.x the free search-grounding
+    quota is zero (a grounded call just 429s), so we don't bother attaching the search tool there.
+    Web search is a secondary nicety here — the bot's real value is its own tools, so we keep this
+    simple rather than maintaining an exhaustive capability table.
+    """
+    m = model.lower()
+    return any(tag in m for tag in ("gemini-2", "gemini-1.5"))
+
+
 async def _run_once(
     *,
     client: genai.Client,
@@ -58,9 +71,9 @@ async def run_chat(
     Robustness:
     - `models` is tried in order; if one hits its quota or errors, the next is used, so the bot
       keeps working after the primary model's daily allowance runs out.
-    - When web search is enabled, each model is first tried WITH Google Search grounding; if that
-      specific combination is rejected (some models/tiers don't allow it), it retries the same
-      model without search rather than failing outright.
+    - Web search is only attached to a model that actually supports it (see model_supports_search),
+      so we never waste a call grounding a model whose search quota is zero. If a supported model's
+      grounded call still fails, the same model is retried without search before moving on.
 
     Tool exposure: the collection tool is always available (speaker's own data only); stats/search
     and artwork are gated by the owner's settings.
@@ -73,35 +86,23 @@ async def run_chat(
     if decls:
         base_tools.append(types.Tool(function_declarations=decls))
 
-    # Tool variants tried per model: with search first (if enabled), then a plain fallback.
-    tool_variants: list[list[types.Tool]] = []
-    if allow_web_search:
-        tool_variants.append(base_tools + [types.Tool(google_search=types.GoogleSearch())])
-    tool_variants.append(base_tools)
+    # Build the ordered list of (model, toolset) attempts. For a search-capable model with web
+    # search enabled, try it WITH search first, then plain; every model always has a plain attempt.
+    attempts: list[tuple[str, list[types.Tool]]] = []
+    for model in models:
+        if allow_web_search and model_supports_search(model):
+            attempts.append((model, base_tools + [types.Tool(google_search=types.GoogleSearch())]))
+        attempts.append((model, base_tools))
 
     last_exc: Exception | None = None
-    for model in models:
-        for i, tools in enumerate(tool_variants):
-            config = types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                tools=tools or None,
-            )
-            try:
-                return await _run_once(client=client, model=model, config=config, history=history, ctx=ctx)
-            except genai_errors.ClientError as e:
-                last_exc = e
-                # 400 usually means a bad tool combination (e.g. search not supported) — drop search
-                # and retry the same model with the next variant before giving up on it.
-                if getattr(e, "code", None) == 400 and i + 1 < len(tool_variants):
-                    log.warning(f"Model {model} rejected tool combo, retrying without search: {e}")
-                    continue
-                # 429 / auth / other client errors: this model won't help, move to the next model.
-                log.warning(f"Model {model} client error, trying next model: {e}")
-                break
-            except genai_errors.ServerError as e:
-                last_exc = e
-                log.warning(f"Model {model} server error, trying next model: {e}")
-                break
+    for model, tools in attempts:
+        config = types.GenerateContentConfig(system_instruction=system_prompt, tools=tools or None)
+        try:
+            return await _run_once(client=client, model=model, config=config, history=history, ctx=ctx)
+        except (genai_errors.ClientError, genai_errors.ServerError) as e:
+            last_exc = e
+            log.warning(f"Gemini attempt failed (model={model}), trying next: {e}")
+            continue
 
     if last_exc:
         raise last_exc
