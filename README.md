@@ -27,7 +27,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.1.0"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.1.1"
 path = "aichat"
 enabled = true
 ```
@@ -46,13 +46,19 @@ Then `docker compose build` and run migrations as usual (they run automatically 
 
 ### Choosing a model (and fallbacks)
 
-The default is `gemini-2.5-flash-lite`. On the free tier a `-lite` model is the right pick: it gives far
-more requests **per day** than the full Flash models (roughly ~500/day vs ~20/day) at the same 15/min
-cap. Check your own live limits in Google AI Studio — they vary by account and change over time.
+The default is `gemini-3.1-flash-lite` — the standout free-tier chat model at roughly **500 requests/day
+at 15/min**, versus ~20/day for every other free Flash model. Copy the exact model ID from Google AI
+Studio if it errors; limits vary by account and change over time.
 
-`fallback_models` is a semicolon-separated list of backups (default `gemini-2.5-flash`). Because each
-free model has its **own separate daily allowance**, listing another model keeps the bot answering after
-the primary's quota runs out — the chain is tried in order on any failure.
+`fallback_models` is a semicolon-separated list of backups (default `gemini-2.5-flash-lite`). Because
+each free model has its **own separate daily allowance**, the chain both survives an outdated primary
+model ID and stacks extra daily capacity — it's tried in order on any failure. A small bot on
+`gemini-3.1-flash-lite` (500/day) may never need it.
+
+**Web search caveat:** Gemini's Google Search grounding is free only on **Gemini 2.x** models
+(~1,500/day) — *not* on Gemini 3.x. So with the default 3.x chat model, `allow_web_search` will fall
+back to answering without search. To actually use web search for free, set your model to a 2.x one
+(which caps you at ~20 chat requests/day). It's a genuine trade-off.
 
 ### Data exposure (off by default)
 

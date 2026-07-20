@@ -28,17 +28,17 @@ class AIChatSettings(models.Model):
     )
     model = models.CharField(
         max_length=64,
-        default="gemini-2.5-flash-lite",
-        help_text="Primary Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). A '-lite' "
-        "model is recommended: on the free tier it gives far more requests per day than the full Flash models "
-        "(e.g. ~500/day at 15/min vs ~20/day). Check your live limits in Google AI Studio.",
+        default="gemini-3.1-flash-lite",
+        help_text="Primary Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). "
+        "gemini-3.1-flash-lite is the best free-tier chat pick by far — ~500 requests/day at 15/min, versus "
+        "~20/day for the full Flash models. Copy the exact ID from Google AI Studio if this errors.",
     )
     fallback_models = models.TextField(
         blank=True,
-        default="gemini-2.5-flash",
-        help_text="Semicolon-separated backup model IDs, tried in order if the primary model fails or hits its "
-        "quota. Each free model has its own separate daily allowance, so listing another one keeps the bot "
-        "working after the primary's quota runs out. Leave empty to disable fallback.",
+        default="gemini-2.5-flash-lite",
+        help_text="Semicolon-separated backup model IDs, tried in order if the primary fails or hits its quota. "
+        "Each free model has its own separate daily allowance, so this both survives an outdated primary model "
+        "ID and stacks extra daily capacity. Leave empty to disable fallback.",
     )
     personality = models.TextField(
         default=DEFAULT_PERSONALITY,
@@ -77,9 +77,10 @@ class AIChatSettings(models.Model):
     )
     allow_web_search = models.BooleanField(
         default=False,
-        help_text="Let the AI search the web (via Gemini's built-in Google Search grounding) to answer "
-        "questions with current information. OFF by default. Requires a model that supports search grounding; "
-        "if a request fails with it on, the bot automatically retries without it.",
+        help_text="Let the AI search the web (via Gemini's built-in Google Search grounding) to answer with "
+        "current information. OFF by default. On the free tier, search grounding only works on Gemini 2.x "
+        "models (~1,500 searches/day) — NOT on Gemini 3.x. If your chat model doesn't support it, the bot "
+        "automatically retries without search rather than failing.",
     )
 
     class Meta:
