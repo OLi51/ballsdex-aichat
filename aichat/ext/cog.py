@@ -218,6 +218,7 @@ class AIChat(commands.Cog):
         await self._respond(message.channel, message.channel.id, message.author, content, is_dm=is_dm)
 
     @app_commands.command(name="chat")
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
     async def chat(self, interaction: discord.Interaction, message: str):
         """
@@ -261,6 +262,7 @@ class AIChat(commands.Cog):
         await _send_reply(interaction.followup.send, reply, attachment_path)
 
     @app_commands.command(name="forget")
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def forget(self, interaction: discord.Interaction):
         """
         Clear the bot's memory of this channel's conversation.

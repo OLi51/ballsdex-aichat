@@ -27,7 +27,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.0"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.1"
 path = "aichat"
 enabled = true
 ```
@@ -42,8 +42,18 @@ Then `docker compose build` and run migrations as usual (they run automatically 
 3. Optionally edit `personality` to give the bot a voice. You do **not** need to tell it its own name
    or what's collected — that's injected automatically from your core settings. Just describe the
    personality.
-4. Optionally restrict it to specific **server** channels with `allowed_channel_ids`. Direct messages
-   always work regardless of that list.
+4. Optionally restrict it to specific **server** channels with `allowed_channel_ids` (DMs are never
+   restricted by that list — see below).
+
+### Direct messages
+
+`/chat` and `/forget` work in DMs out of the box (they arrive as interactions, which don't need any
+extra intent).
+
+Free-text DM chat — just messaging the bot without a command, like old Shapes bots — additionally
+requires the bot to receive DM message events, which **stock Ballsdex does not enable**. To turn it on,
+add `dm_messages=True` to the `discord.Intents(...)` call in `ballsdex/core/bot.py`, then rebuild. Note
+that's a core edit outside this package, and a `git pull` of Ballsdex may revert it.
 
 ### Choosing a model (and fallbacks)
 
