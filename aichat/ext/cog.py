@@ -19,6 +19,11 @@ log = logging.getLogger("ballsdex.packages.aichat")
 
 DISCORD_MESSAGE_LIMIT = 2000
 
+# The stock Ballsdex /about description. Most people experimenting never change it, and it
+# hardcodes the word "countryballs" — which contradicts a reskinned collectible (e.g. "melodies").
+# We only feed the description to the AI if the owner actually customized it away from this.
+STOCK_ABOUT_DEFAULT = "Collect countryballs on Discord, exchange them and battle with friends!"
+
 
 def _build_system_prompt(personality: str) -> str:
     """
@@ -26,17 +31,48 @@ def _build_system_prompt(personality: str) -> str:
     (the same values that name the bot everywhere else) ahead of the admin-authored
     personality text. This way the AI always knows which bot it is and what's collected
     without the owner having to repeat it inside the personality field.
+
+    Safeguards, because most people experimenting never touch the default settings:
+    - The collectible name (which owners *do* customize) is the source of truth for identity,
+      not the /about description (which they usually don't).
+    - The /about description is only included if it was genuinely customized and doesn't still
+      say "countryball" — otherwise the AI would introduce itself with the wrong collectible.
+    - A behavioral guard tells the AI not to over-play its "I'm just a collector bot" identity
+      or hide behind it to refuse ordinary requests.
     """
-    identity = (
-        f"You are the companion AI built into the Discord bot named \"{settings.bot_name}\". "
-        f"In this bot, players collect and trade {settings.plural_collectible_name} "
-        f"(singular: {settings.collectible_name}). "
-        f"Here is how the bot describes itself: {settings.about_description}\n\n"
-        "Stay in character as part of this specific bot. When people ask what you are, you are "
-        f"{settings.bot_name}'s companion, not a generic assistant.\n\n"
-        "--- Your personality and behavior (set by the bot owner) ---\n"
+    bot_name = settings.bot_name
+    collectible = settings.collectible_name
+    collectibles = settings.plural_collectible_name
+    about = (settings.about_description or "").strip()
+
+    parts = [
+        f'You are the companion AI built into the Discord bot named "{bot_name}". '
+        f"In this bot, players collect and trade {collectibles} (singular: {collectible}).",
+    ]
+
+    if about and about != STOCK_ABOUT_DEFAULT and "countryball" not in about.lower():
+        parts.append(f"Here is how the bot describes itself: {about}")
+
+    parts.append(
+        f"Stay in character as part of this specific bot. When people ask what you are, you are "
+        f"{bot_name}'s companion, not a generic assistant."
     )
-    return identity + personality
+
+    parts.append(
+        "Talk like a normal, friendly person. Don't constantly announce that you're an AI, a bot, "
+        f"or a {collectible} collector, and never hide behind that identity to dodge ordinary "
+        'requests (avoid lines like "I\'m just a Discord collector bot, I can\'t do that"). If you '
+        "genuinely can't help with something, say so briefly and naturally without exaggerating your "
+        "limitations. Keep replies concise and in character."
+    )
+
+    # The personality field has a model-level default, but guard against it being blanked out.
+    parts.append(
+        "--- Your personality and behavior (set by the bot owner) ---\n"
+        + (personality.strip() or "Be warm, brief, and friendly.")
+    )
+
+    return "\n\n".join(parts)
 
 
 def _chunks(text: str, size: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
