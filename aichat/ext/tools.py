@@ -1,8 +1,7 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import aiohttp
 from google.genai import types
 
 from bd_models.models import Ball, BallInstance
@@ -15,12 +14,16 @@ log = logging.getLogger("ballsdex.packages.aichat")
 @dataclass
 class ToolContext:
     """
-    Per-request context threaded into tool calls. `discord_id` is bound by the cog to
-    whoever is actually talking, so the model can never ask to see someone else's
-    collection just by naming their user ID.
+    Per-request context threaded into tool calls.
+
+    - `discord_id` is bound by the cog to whoever is actually talking, so the model can never
+      ask to see someone else's collection just by naming their user ID.
+    - `allowed` is the set of tool names the owner has enabled for this request. dispatch()
+      refuses anything outside it, so even a hallucinated call to a disabled tool is a no-op.
     """
 
     discord_id: int
+    allowed: set[str] = field(default_factory=set)
     pending_attachment: Path | None = None
 
 
@@ -49,7 +52,8 @@ async def get_my_collection(ctx: ToolContext, limit: int = 10) -> dict:
 
 
 async def get_ball_info(name: str) -> dict:
-    ball = await Ball.objects.filter(country__icontains=name).afirst()
+    # enabled_objects only: never leak stats for disabled / unreleased / admin-only collectibles.
+    ball = await Ball.enabled_objects.filter(country__icontains=name).afirst()
     if not ball:
         return {"found": False}
     return {
@@ -65,97 +69,102 @@ async def get_ball_info(name: str) -> dict:
     }
 
 
+async def search_collectibles(name: str | None = None, limit: int = 15) -> dict:
+    # enabled_objects only, same leak protection as get_ball_info.
+    query = Ball.enabled_objects.all()
+    if name:
+        query = query.filter(country__icontains=name)
+    limit = max(1, min(limit, 25))
+    results = [
+        {"name": ball.country, "rarity": ball.rarity, "capacity_name": ball.capacity_name}
+        async for ball in query.order_by("rarity")[:limit]
+    ]
+    return {"count": len(results), "results": results}
+
+
 async def get_ball_image(ctx: ToolContext, name: str) -> dict:
-    ball = await Ball.objects.filter(country__icontains=name).afirst()
+    # enabled_objects only: never surface artwork for disabled / unreleased collectibles.
+    ball = await Ball.enabled_objects.filter(country__icontains=name).afirst()
     if not ball or not ball.collection_card:
         return {"found": False}
     ctx.pending_attachment = Path(ball.collection_card.path)
     return {"found": True, "name": ball.country}
 
 
-async def generate_music(prompt: str) -> dict:
-    # imported lazily to avoid a hard import cycle with models.py at app load time
-    from ..models import AIChatSettings
+# --- Tool declarations, defined individually so the set can be built per-request ---
 
-    config = await AIChatSettings.objects.afirst()
-    if not config or not config.music_enabled:
-        return {
-            "available": False,
-            "message": "Music generation isn't configured on this server. The bot owner needs to set "
-            "music_api_url and music_api_key in the AI chat settings admin page — no provider is bundled "
-            "by default.",
-        }
+_DECL_COLLECTION = types.FunctionDeclaration(
+    name="get_my_collection",
+    description="Get a summary of the CURRENT SPEAKER's own collection: total owned, unique species, "
+    "and the top entries by how many copies are owned. Cannot be used to look at anyone else's collection.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {"limit": {"type": "integer", "description": "Max number of top entries to return, default 10"}},
+    },
+)
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                config.music_api_url,
-                json={"prompt": prompt},
-                headers={"Authorization": f"Bearer {config.music_api_key}"},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    return {"available": True, "success": False, "error": f"Provider returned HTTP {resp.status}"}
-                data = await resp.json()
-                return {"available": True, "success": True, "result": data}
-    except Exception as e:
-        log.error(f"Music generation request failed: {e}")
-        return {"available": True, "success": False, "error": str(e)}
+_DECL_BALL_INFO = types.FunctionDeclaration(
+    name="get_ball_info",
+    description="Look up game stats (rarity, health, attack, special capacity) for a specific released "
+    "collectible by name.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "Name of the collectible to look up"}},
+        "required": ["name"],
+    },
+)
 
+_DECL_SEARCH = types.FunctionDeclaration(
+    name="search_collectibles",
+    description="Search released collectibles by name fragment (or list some), returning name, rarity and "
+    "capacity for each. Useful for discovery questions like 'what fire-type ones exist'.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Optional name fragment to filter by"},
+            "limit": {"type": "integer", "description": "Max results, 1-25, default 15"},
+        },
+    },
+)
 
-TOOLS = [
-    types.FunctionDeclaration(
-        name="get_my_collection",
-        description="Get a summary of the CURRENT SPEAKER's own collection: total owned, unique species, "
-        "and the top entries by how many copies are owned. Cannot be used to look at anyone else's collection.",
-        parameters_json_schema={
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "description": "Max number of top entries to return, default 10"},
-            },
-        },
-    ),
-    types.FunctionDeclaration(
-        name="get_ball_info",
-        description="Look up game stats (rarity, health, attack, special capacity) for a specific "
-        "collectible by name.",
-        parameters_json_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string", "description": "Name of the collectible to look up"}},
-            "required": ["name"],
-        },
-    ),
-    types.FunctionDeclaration(
-        name="get_ball_image",
-        description="Fetch the artwork for a specific collectible so it can be shown as an attachment in chat.",
-        parameters_json_schema={
-            "type": "object",
-            "properties": {"name": {"type": "string", "description": "Name of the collectible"}},
-            "required": ["name"],
-        },
-    ),
-    types.FunctionDeclaration(
-        name="generate_music",
-        description="Generate a short music clip from a text prompt. Only works if the server owner has "
-        "configured a music generation provider; otherwise reports that it's unavailable and why.",
-        parameters_json_schema={
-            "type": "object",
-            "properties": {"prompt": {"type": "string", "description": "Description of the music to generate"}},
-            "required": ["prompt"],
-        },
-    ),
-]
+_DECL_IMAGE = types.FunctionDeclaration(
+    name="get_ball_image",
+    description="Fetch the artwork for a specific released collectible so it can be shown as an attachment.",
+    parameters_json_schema={
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "Name of the collectible"}},
+        "required": ["name"],
+    },
+)
 
 _CTX_AWARE = {"get_my_collection", "get_ball_image"}
 _HANDLERS = {
     "get_my_collection": get_my_collection,
     "get_ball_info": get_ball_info,
+    "search_collectibles": search_collectibles,
     "get_ball_image": get_ball_image,
-    "generate_music": generate_music,
 }
 
 
+def build_tools(allow_stats: bool, allow_artwork: bool) -> tuple[list[types.FunctionDeclaration], set[str]]:
+    """
+    Build the tool set for a request based on the owner's settings.
+
+    get_my_collection is always available (it only ever reveals the speaker's own data, safely
+    guarded). Stats/search and artwork are OFF by default so a curious user can't coax the AI into
+    leaking details or images of rare, unreleased or admin-only collectibles.
+    """
+    decls = [_DECL_COLLECTION]
+    if allow_stats:
+        decls += [_DECL_BALL_INFO, _DECL_SEARCH]
+    if allow_artwork:
+        decls.append(_DECL_IMAGE)
+    return decls, {d.name for d in decls}
+
+
 async def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
+    if name not in ctx.allowed:
+        return {"error": f"The {name} tool is disabled on this server."}
     handler = _HANDLERS.get(name)
     if not handler:
         return {"error": f"Unknown tool {name}"}

@@ -12,6 +12,7 @@ class AIChatSettingsAdmin(admin.ModelAdmin):
                 "fields": (
                     "enabled",
                     "model",
+                    "fallback_models",
                     "api_key",
                     "personality",
                     "max_history",
@@ -20,7 +21,10 @@ class AIChatSettingsAdmin(admin.ModelAdmin):
                 )
             },
         ),
-        ("Music generation (optional, bring your own API)", {"fields": ("music_api_url", "music_api_key")}),
+        (
+            "Data exposure (off by default — avoid leaking rare/unreleased collectibles)",
+            {"fields": ("allow_stats_lookup", "allow_artwork", "allow_web_search")},
+        ),
     )
 
     def has_add_permission(self, request):

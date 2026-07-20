@@ -115,10 +115,13 @@ class AIChat(commands.Cog):
         return await self.queue.submit(
             lambda: run_chat(
                 api_key=config.api_key,
-                model=config.model,
+                models=config.model_chain,
                 system_prompt=system_prompt,
                 history=history,
                 discord_id=discord_id,
+                allow_stats=config.allow_stats_lookup,
+                allow_artwork=config.allow_artwork,
+                allow_web_search=config.allow_web_search,
             )
         )
 

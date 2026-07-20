@@ -28,9 +28,17 @@ class AIChatSettings(models.Model):
     )
     model = models.CharField(
         max_length=64,
+        default="gemini-2.5-flash-lite",
+        help_text="Primary Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). A '-lite' "
+        "model is recommended: on the free tier it gives far more requests per day than the full Flash models "
+        "(e.g. ~500/day at 15/min vs ~20/day). Check your live limits in Google AI Studio.",
+    )
+    fallback_models = models.TextField(
+        blank=True,
         default="gemini-2.5-flash",
-        help_text="Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). "
-        "gemini-2.5-flash and gemini-2.5-flash-lite are covered by the permanent free tier.",
+        help_text="Semicolon-separated backup model IDs, tried in order if the primary model fails or hits its "
+        "quota. Each free model has its own separate daily allowance, so listing another one keeps the bot "
+        "working after the primary's quota runs out. Leave empty to disable fallback.",
     )
     personality = models.TextField(
         default=DEFAULT_PERSONALITY,
@@ -53,16 +61,25 @@ class AIChatSettings(models.Model):
         validators=(COLON_IDS_RE,),
     )
 
-    music_api_url = models.URLField(
-        blank=True,
-        null=True,
-        default=None,
-        help_text="Optional: base URL of a third-party music-generation API. No provider is bundled — "
-        "this only enables the generate_music tool to call an endpoint you configure yourself. "
-        "Leave empty to keep music generation disabled.",
+    # Data-exposure controls. OFF by default so the AI can't be coaxed into leaking details or
+    # artwork of rare, unreleased or admin-only collectibles. The player's own-collection tool is
+    # always available and is unaffected by these. Even when enabled, only released (enabled)
+    # collectibles are ever exposed.
+    allow_stats_lookup = models.BooleanField(
+        default=False,
+        help_text="Let the AI look up and search released collectibles' stats (rarity, health, attack, "
+        "capacity) by name. OFF by default to avoid leaking details of rare or unreleased collectibles.",
     )
-    music_api_key = models.CharField(
-        max_length=200, blank=True, default="", help_text="API key sent as a Bearer token to music_api_url."
+    allow_artwork = models.BooleanField(
+        default=False,
+        help_text="Let the AI fetch and post a released collectible's artwork in chat. OFF by default to "
+        "avoid leaking images of rare or unreleased collectibles.",
+    )
+    allow_web_search = models.BooleanField(
+        default=False,
+        help_text="Let the AI search the web (via Gemini's built-in Google Search grounding) to answer "
+        "questions with current information. OFF by default. Requires a model that supports search grounding; "
+        "if a request fails with it on, the bot automatically retries without it.",
     )
 
     class Meta:
@@ -77,8 +94,15 @@ class AIChatSettings(models.Model):
         return [] if not self.allowed_channel_ids else [int(x) for x in self.allowed_channel_ids.split(";") if x]
 
     @cached_property
-    def music_enabled(self) -> bool:
-        return bool(self.music_api_url)
+    def model_chain(self) -> list[str]:
+        """Primary model followed by any fallbacks, de-duplicated, empties dropped."""
+        raw = [self.model] + [m.strip() for m in (self.fallback_models or "").replace(",", ";").split(";")]
+        seen: list[str] = []
+        for m in raw:
+            m = m.strip()
+            if m and m not in seen:
+                seen.append(m)
+        return seen
 
 
 class ChatMessage(models.Model):
