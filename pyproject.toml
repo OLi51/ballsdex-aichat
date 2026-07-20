@@ -1,0 +1,33 @@
+[project]
+name = "ballsdex-aichat"
+version = "1.0.0"
+
+description = "A Gemini-powered AI chat companion for Ballsdex — mention or DM the bot to talk, with live access to the player's collection."
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "OLi51" },
+]
+readme = "README.md"
+requires-python = ">=3.12"
+keywords = ["ai", "chat", "gemini", "fun"]
+
+dependencies = [
+    "google-genai>=1.0.0",
+]
+
+# Note: intentionally NOT depending on "ballsdex" here even though this package needs it
+# at runtime. The Dockerfile installs extras with `uv pip install --reinstall`, and since
+# "ballsdex" isn't a published package on any index, uv's resolver fails trying to fetch
+# it if it appears anywhere in the dependency graph. Ballsdex is guaranteed to already be
+# present in the bot's environment, so this is safe to omit.
+
+[project.urls]
+Homepage = "https://github.com/OLi51/ballsdex-aichat"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aichat"]
