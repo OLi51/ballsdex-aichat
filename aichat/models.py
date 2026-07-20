@@ -31,14 +31,16 @@ class AIChatSettings(models.Model):
         default="gemini-3.1-flash-lite",
         help_text="Primary Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). "
         "gemini-3.1-flash-lite is the best free-tier chat pick by far — ~500 requests/day at 15/min, versus "
-        "~20/day for the full Flash models. Copy the exact ID from Google AI Studio if this errors.",
+        "~20/day for the full Flash models. If this returns a 404, the ID has changed — copy the exact one "
+        "from Google AI Studio (model IDs get retired over time; e.g. gemini-2.5-flash-lite is already gone).",
     )
     fallback_models = models.TextField(
         blank=True,
-        default="gemini-2.5-flash-lite",
-        help_text="Semicolon-separated backup model IDs, tried in order if the primary fails or hits its quota. "
-        "Each free model has its own separate daily allowance, so this both survives an outdated primary model "
-        "ID and stacks extra daily capacity. Leave empty to disable fallback.",
+        default="",
+        help_text="Optional semicolon-separated backup model IDs, tried in order if the primary fails or hits "
+        "its quota. Each free model has its own separate daily allowance, so a backup both survives an "
+        "outdated primary ID and stacks extra daily capacity. Empty by default — gemini-3.1-flash-lite's "
+        "~500/day is plenty for most bots. Only add IDs you've confirmed exist on your account.",
     )
     personality = models.TextField(
         default=DEFAULT_PERSONALITY,

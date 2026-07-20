@@ -27,7 +27,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.1.1"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.1.2"
 path = "aichat"
 enabled = true
 ```
@@ -50,15 +50,15 @@ The default is `gemini-3.1-flash-lite` — the standout free-tier chat model at 
 at 15/min**, versus ~20/day for every other free Flash model. Copy the exact model ID from Google AI
 Studio if it errors; limits vary by account and change over time.
 
-`fallback_models` is a semicolon-separated list of backups (default `gemini-2.5-flash-lite`). Because
-each free model has its **own separate daily allowance**, the chain both survives an outdated primary
-model ID and stacks extra daily capacity — it's tried in order on any failure. A small bot on
-`gemini-3.1-flash-lite` (500/day) may never need it.
+`fallback_models` is an optional semicolon-separated list of backups, tried in order on any failure.
+Empty by default — `gemini-3.1-flash-lite`'s ~500/day is plenty for most bots. Only add IDs you've
+confirmed exist on your account: Google retires model IDs over time (`gemini-2.5-flash-lite`, for
+instance, is already gone for new projects), so a stale fallback just adds a dead entry.
 
 **Web search caveat:** Gemini's Google Search grounding is free only on **Gemini 2.x** models
-(~1,500/day) — *not* on Gemini 3.x. So with the default 3.x chat model, `allow_web_search` will fall
-back to answering without search. To actually use web search for free, set your model to a 2.x one
-(which caps you at ~20 chat requests/day). It's a genuine trade-off.
+(~1,500/day) — *not* on Gemini 3.x, which is confirmed to have a zero search-grounding quota on the free
+tier. So with the default 3.x chat model, `allow_web_search` gracefully falls back to answering without
+search. Free web search realistically isn't available alongside the high-throughput 3.x chat models.
 
 ### Data exposure (off by default)
 
