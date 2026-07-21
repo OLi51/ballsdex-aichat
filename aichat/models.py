@@ -28,19 +28,24 @@ class AIChatSettings(models.Model):
     )
     model = models.CharField(
         max_length=64,
-        default="gemini-3.1-flash-lite",
+        default="gemini-3.5-flash-lite",
         help_text="Primary Gemini model ID used for chat (see ai.google.dev/gemini-api/docs/models). "
-        "gemini-3.1-flash-lite is the best free-tier chat pick by far — ~500 requests/day at 15/min, versus "
-        "~20/day for the full Flash models. If this returns a 404, the ID has changed — copy the exact one "
-        "from Google AI Studio (model IDs get retired over time; e.g. gemini-2.5-flash-lite is already gone).",
+        "gemini-3.5-flash-lite is a meaningfully better model than 3.1 Flash-Lite (notably stronger on "
+        "coding/agentic and long-context benchmarks per Google's own release) with the SAME free-tier limits "
+        "— ~500 requests/day at 15/min, versus ~20/day for the full Flash models. If this returns a 404, the "
+        "ID has changed — copy the exact one from Google AI Studio (model IDs get retired over time; e.g. "
+        "gemini-2.5-flash-lite is already gone).",
     )
     fallback_models = models.TextField(
         blank=True,
-        default="",
-        help_text="Optional semicolon-separated backup model IDs, tried in order if the primary fails or hits "
-        "its quota. Each free model has its own separate daily allowance, so a backup both survives an "
-        "outdated primary ID and stacks extra daily capacity. Empty by default — gemini-3.1-flash-lite's "
-        "~500/day is plenty for most bots. Only add IDs you've confirmed exist on your account.",
+        default="gemini-3.1-flash-lite",
+        help_text="Semicolon-separated backup model IDs, tried in order if the primary fails or hits its quota. "
+        "Each free model has its own separate daily allowance, so a backup both survives an outdated primary "
+        "ID and stacks extra daily capacity. gemini-3.1-flash-lite has the exact same free-tier limits as the "
+        "default primary model (~500/day, 15/min) and its own separate quota, so this roughly doubles daily "
+        "headroom for free — it's simply a slightly weaker model, which is fine for overflow. Clear it if you "
+        "don't want that; only add IDs you've confirmed exist on your "
+        "account.",
     )
     personality = models.TextField(
         default=DEFAULT_PERSONALITY,
