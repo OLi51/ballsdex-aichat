@@ -59,9 +59,11 @@ class AIChatSettings(models.Model):
     )
     requests_per_minute = models.PositiveIntegerField(
         default=12,
-        help_text="Max Gemini requests per minute across every server this bot is in. All chat requests go "
-        "through a single queue that waits between calls to respect this limit — keep it a bit under your "
-        "API key's actual quota (the free tier is 15/min). Raise this if you're on a paid plan.",
+        help_text="Max Gemini API requests per minute across every server this bot is in. Keep it a bit "
+        "under your API key's actual quota (the free tier is 15/min). Note this counts API requests, not "
+        "replies: one reply costs one request, plus one more for each round of tool use, so a reply that "
+        "looks something up typically costs 2. At the default of 12 that's roughly 6 such replies a minute. "
+        "Raise this if you're on a paid plan.",
     )
     allowed_channel_ids = models.TextField(
         blank=True,

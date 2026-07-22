@@ -43,7 +43,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.4.0"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.4.1"
 path = "aichat"
 enabled = true
 ```
@@ -143,9 +143,14 @@ launch (they are *never* listed, toggle or not) or leave this off.
 
 ### Rate limiting
 
-All chat requests share one queue. `requests_per_minute` (default 12) controls the minimum spacing
-between Gemini calls across every server this bot is in — keep it just under your model's actual
-per-minute quota (the free tier is 15/min). Raise it if you move to a paid plan.
+All chat requests share one queue, and `requests_per_minute` (default 12) spaces out the actual
+Gemini API calls across every server this bot is in. Keep it just under your model's real per-minute
+quota (the free tier is 15/min); raise it on a paid plan.
+
+**It counts API requests, not replies.** A reply costs one request, plus one more for every round of
+tool use — so a reply that looks something up in your data typically costs 2, and a question that
+chains several lookups can cost 4 or 5. At the default of 12 that's roughly 6 lookup-style replies a
+minute. Budget for the requests, not the conversations.
 
 ## License
 

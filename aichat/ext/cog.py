@@ -131,6 +131,7 @@ class AIChat(commands.Cog):
                 allow_artwork=config.allow_artwork,
                 allow_events=config.allow_special_events,
                 allow_web_search=config.allow_web_search,
+                limiter=self.queue.limiter,
             )
         )
 

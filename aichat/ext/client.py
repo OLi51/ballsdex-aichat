@@ -5,15 +5,16 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
+from .gemini_queue import RateLimiter
 from .tools import ToolContext, build_tools, dispatch
 
 log = logging.getLogger("ballsdex.packages.aichat")
 
-# A single question can legitimately chain several lookups — e.g. find the rarest species, then
-# that species' individual copies, then its base stats, then its artwork. Four rounds is enough
-# for that exact chain and nothing more, so one extra exploratory call would truncate the answer.
-# Rounds only cost a request when the model actually uses them; parallel calls share a round.
-MAX_TOOL_ROUNDS = 6
+# Each round is one API request, and the final text answer needs a round of its own — so N
+# chained lookups cost N+1. Five allows the longest chain we actually see (rarest species → its
+# individual copies → base stats → artwork → answer) and caps a worst-case turn at five requests.
+# Rounds are only spent when the model uses them, and parallel calls share a round.
+MAX_TOOL_ROUNDS = 5
 FALLBACK_REPLY = "I got a bit tangled up thinking about that one — mind trying again?"
 
 
@@ -30,6 +31,11 @@ def model_supports_search(model: str) -> bool:
     return any(tag in m for tag in ("gemini-2", "gemini-1.5"))
 
 
+def _without_tools(config: types.GenerateContentConfig) -> types.GenerateContentConfig:
+    """Same config with tools stripped, so the model has to answer instead of calling one."""
+    return types.GenerateContentConfig(system_instruction=config.system_instruction, tools=None)
+
+
 async def _run_once(
     *,
     client: genai.Client,
@@ -37,12 +43,24 @@ async def _run_once(
     config: types.GenerateContentConfig,
     history: list[types.Content],
     ctx: ToolContext,
+    limiter: RateLimiter | None = None,
 ) -> tuple[str, Path | None]:
     """One model+toolset attempt, including the function-calling loop."""
     ctx.pending_attachment = None  # reset in case a prior attempt half-populated it
     contents = list(history)
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = await client.aio.models.generate_content(model=model, contents=contents, config=config)
+    for round_index in range(MAX_TOOL_ROUNDS):
+        # Spend the last round answering rather than looking something else up. Without this,
+        # a question that wants more lookups than we allow burns its final request on a tool
+        # call whose result is then thrown away, and the user gets the generic failure line
+        # instead of an answer built from everything already gathered.
+        last_round = round_index == MAX_TOOL_ROUNDS - 1
+        round_config = _without_tools(config) if last_round else config
+
+        # Every iteration is a separate API request, and so is every retry against a fallback
+        # model — so the gate lives here, not around the turn as a whole.
+        if limiter is not None:
+            await limiter.acquire()
+        response = await client.aio.models.generate_content(model=model, contents=contents, config=round_config)
         calls = response.function_calls
         if not calls:
             return response.text or FALLBACK_REPLY, ctx.pending_attachment
@@ -71,6 +89,7 @@ async def run_chat(
     allow_artwork: bool = False,
     allow_events: bool = False,
     allow_web_search: bool = False,
+    limiter: RateLimiter | None = None,
 ) -> tuple[str, Path | None]:
     """
     Runs one full turn of conversation against Gemini and returns (reply text, optional image
@@ -106,7 +125,9 @@ async def run_chat(
     for model, tools in attempts:
         config = types.GenerateContentConfig(system_instruction=system_prompt, tools=tools or None)
         try:
-            return await _run_once(client=client, model=model, config=config, history=history, ctx=ctx)
+            return await _run_once(
+                client=client, model=model, config=config, history=history, ctx=ctx, limiter=limiter
+            )
         except (genai_errors.ClientError, genai_errors.ServerError) as e:
             last_exc = e
             log.warning(f"Gemini attempt failed (model={model}), trying next: {e}")
