@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from django.db.models import Count
 from google.genai import types
 
 from bd_models.models import Ball, BallInstance
@@ -27,10 +28,6 @@ class ToolContext:
     pending_attachment: Path | None = None
 
 
-def _ball_display_name(ball: Ball) -> str:
-    return ball.short_name or ball.country
-
-
 async def get_my_collection(ctx: ToolContext, limit: int = 10) -> dict:
     try:
         player = await PlayerModel.objects.aget(discord_id=ctx.discord_id)
@@ -38,15 +35,26 @@ async def get_my_collection(ctx: ToolContext, limit: int = 10) -> dict:
         return {"total_owned": 0, "unique_species": 0, "top_by_count": []}
 
     total = await BallInstance.objects.filter(player=player, deleted=False).acount()
-    counts: dict[str, int] = {}
-    async for instance in BallInstance.objects.filter(player=player, deleted=False).select_related("ball")[:500]:
-        name = _ball_display_name(instance.ball)
-        counts[name] = counts.get(name, 0) + 1
-    top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+
+    # Grouped DB-side instead of pulling instances into Python to tally: correct regardless of
+    # collection size (the old [:500] slice silently truncated and skewed results for players
+    # with more than 500 instances) and far cheaper (one query returning `limit` rows instead of
+    # up to 500 fully-joined rows deserialized just to count them).
+    grouped = (
+        BallInstance.objects.filter(player=player, deleted=False)
+        .values("ball_id", "ball__short_name", "ball__country")
+        .annotate(count=Count("id"))
+        .order_by("-count")
+    )
+    unique_species = await grouped.acount()
+    top = [row async for row in grouped[:limit]]
+
     return {
         "total_owned": total,
-        "unique_species": len(counts),
-        "top_by_count": [{"name": n, "count": c} for n, c in top],
+        "unique_species": unique_species,
+        "top_by_count": [
+            {"name": row["ball__short_name"] or row["ball__country"], "count": row["count"]} for row in top
+        ],
         "collectible_name": settings.plural_collectible_name,
     }
 

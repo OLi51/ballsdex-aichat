@@ -27,7 +27,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.2"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.3"
 path = "aichat"
 enabled = true
 ```

@@ -1,6 +1,6 @@
 [project]
 name = "ballsdex-aichat"
-version = "1.2.2"
+version = "1.2.3"
 
 description = "A Gemini-powered AI chat companion for Ballsdex — mention or DM the bot to talk, with live access to the player's collection."
 license = "MIT"

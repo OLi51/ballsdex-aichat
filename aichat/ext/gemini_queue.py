@@ -44,6 +44,18 @@ class GeminiQueue:
         if self._worker_task is not None:
             self._worker_task.cancel()
             self._worker_task = None
+        # Cancelling the worker only settles whichever job it was actively processing (see
+        # _worker's CancelledError handler). Anything still sitting in the queue was never
+        # touched, so without this its future would never resolve and the caller waiting on
+        # `submit()` would hang forever (e.g. on cog reload with more than one request queued).
+        while not self._queue.empty():
+            try:
+                job = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not job.future.done():
+                job.future.cancel()
+            self._queue.task_done()
 
     @property
     def pending(self) -> int:

@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 from google.genai import types
 
+from ballsdex.core.utils.formatting import pagify
 from settings.models import settings
 
 from .client import run_chat
@@ -16,8 +17,6 @@ if TYPE_CHECKING:
     from ballsdex.core.bot import BallsDexBot
 
 log = logging.getLogger("ballsdex.packages.aichat")
-
-DISCORD_MESSAGE_LIMIT = 2000
 
 # The stock Ballsdex /about description. Most people experimenting never change it, and it
 # hardcodes the word "countryballs" — which contradicts a reskinned collectible (e.g. "melodies").
@@ -75,12 +74,14 @@ def _build_system_prompt(personality: str) -> str:
     return "\n\n".join(parts)
 
 
-def _chunks(text: str, size: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
-    return [text[i : i + size] for i in range(0, len(text), size)] or [""]
-
-
 async def _send_reply(sender, text: str, attachment_path):
-    chunks = _chunks(text)
+    # pagify() (not a hand-rolled fixed-size slicer) breaks on line boundaries where possible
+    # and, critically, escapes mass mentions by default — the AI's reply is free-form generated
+    # text, and the bot sets no restrictive allowed_mentions default, so an unescaped "@everyone"
+    # in a reply would actually ping the server. pagify() yields nothing for empty/whitespace-only
+    # text (it strips before checking), so fall back to a placeholder rather than silently
+    # sending nothing.
+    chunks = list(pagify(text)) or ["(empty response)"]
     file = discord.File(attachment_path) if attachment_path and attachment_path.exists() else None
     for i, chunk in enumerate(chunks):
         kwargs = {"file": file} if file and i == len(chunks) - 1 else {}
