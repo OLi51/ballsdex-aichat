@@ -32,9 +32,14 @@ through function calling, so it answers from your bot's real data instead of mak
 - **Optional web search** — off by default; when on, uses Gemini's built-in Google Search grounding to
   answer with current information.
 - **Always-on model fallback** — list backup models; if the primary hits its quota or errors, the next
-  one is used automatically, so the bot keeps working.
-- **Built for shared keys** — every Gemini call goes through a single rate-limited queue, so one API key
-  used across multiple servers never bursts past its quota. Requests wait their turn instead of dropping.
+  one is used automatically, so the bot keeps working. A model that has spent its daily quota is
+  remembered and skipped to the back of the queue until it resets, rather than being retried into a
+  rejection every turn.
+- **Built for shared keys** — every Gemini call goes through a rate-limited queue, so one API key used
+  across multiple servers never bursts past its quota. Requests wait their turn instead of dropping.
+- **Quota protection** — a per-model rate limit that routes around a busy model, one per-user cooldown
+  shared by `/chat` and mentions, and an optional daily request budget that makes the bot bow out
+  gracefully rather than start failing. See [Quota protection](#quota-protection).
 - **Free to run** — designed around Google AI Studio's permanent free tier (no credit card).
 
 ## Installation
@@ -43,7 +48,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.4.1"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.5.0"
 path = "aichat"
 enabled = true
 ```
@@ -141,16 +146,65 @@ an event never existed. It's also why the toggle defaults to off: a non-hidden e
 but not announced yet would show up. If you stage events in advance, either keep them `hidden` until
 launch (they are *never* listed, toggle or not) or leave this off.
 
-### Rate limiting
+### Quota protection
 
-All chat requests share one queue, and `requests_per_minute` (default 12) spaces out the actual
-Gemini API calls across every server this bot is in. Keep it just under your model's real per-minute
-quota (the free tier is 15/min); raise it on a paid plan.
+Three settings, in the **Quota protection** section of the admin panel, control how hard the bot is
+allowed to lean on your API key. What it has actually spent is visible under **Daily usage**.
+
+**`requests_per_minute`** (default 12) spaces out the actual Gemini API calls across every server
+this bot is in. Keep it just under your model's real per-minute quota (the free tier is 15/min);
+raise it on a paid plan.
 
 **It counts API requests, not replies.** A reply costs one request, plus one more for every round of
 tool use — so a reply that looks something up in your data typically costs 2, and a question that
 chains several lookups can cost 4 or 5. At the default of 12 that's roughly 6 lookup-style replies a
 minute. Budget for the requests, not the conversations.
+
+It is also **per model**. The free tier meters each model ID separately, so a primary plus one
+fallback is two independent 15/min buckets rather than one. The bot prefers your primary and only
+spills over to a fallback when the primary's bucket is actually busy — so a quiet instance always
+gets your best model, and a busy one gets an answer instead of a wait.
+
+**Daily exhaustion is handled separately**, because it's a different problem: a model that has spent
+its ~500-a-day allowance will keep saying so until the quota resets, and no amount of pacing helps.
+When a model reports its *daily* quota gone, the bot remembers and sorts it last for the rest of the
+day, so the chain stops opening every turn with a request that can only be rejected. Per-minute
+429s are deliberately not treated this way — those mean "wait a moment", not "come back tomorrow",
+and benching a good model over one busy minute would be far worse than the wasted retry.
+
+This is remembered in the database, so it survives a restart, and it expires by itself at Pacific
+midnight — a new day is simply a new row. An exhausted model is *demoted, never dropped*: that
+belief comes from a single API response, so it still gets tried as a last resort rather than risking
+an empty chain and a silent bot. You can see which models are flagged under **Daily usage**.
+
+**`user_cooldown_seconds`** (default 10) is the minimum gap between one person's messages, across
+**both** `/chat` and mentions/DMs — one shared budget per person. Previously `/chat` had a hardcoded
+5-second cooldown and the mention path had none at all, so mentioning the bot was the cheapest way
+for one person to drain a shared key; splitting the limit per path just relocates that problem.
+Mentions sent too soon get a ⏳ reaction, `/chat` gets a quiet ephemeral note — neither costs an API
+request. Set to 0 to disable.
+
+This one is about **fairness, not quota**. The rate limiter already stops the bot bursting past your
+per-minute quota, and the daily budget covers the day; what the cooldown prevents is one fast talker
+filling the queue so everyone else waits behind them. That's why 10s is a reasonable default and
+going much higher buys little — see the note below.
+
+**`daily_request_budget`** (default 0 = no budget) stops the bot after a set number of API requests
+in a day, replying with a friendly "back tomorrow" line rather than failing. The count is stored in
+the database, so it survives a restart, and it resets at midnight US Pacific — the same moment
+Google's free daily quotas do. Set it if you'd rather the bot go quiet on its own terms than have
+every request start failing mid-conversation when the real quota runs out. The free tier gives
+roughly 500 requests/day *per model*, so a primary and a fallback is ~1,000.
+
+A turn already in flight is allowed to finish, so the budget can overshoot slightly rather than
+abandoning a reply it has already paid for.
+
+The budget is **global to the bot, not per Discord server**. It protects your API key, and the key
+is what all your servers share — so a busy server can spend the day's budget and a quiet one will
+find the bot resting. It's also global to the *host*: the day boundary is US Pacific regardless of
+where your server is or what timezone it's set to, because that's when Google's quota actually
+resets. A budget counting your local midnight would either free up while the real quota was still
+exhausted, or stay locked for hours after it had already refilled.
 
 ## License
 

@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import discord
@@ -11,6 +12,7 @@ from settings.models import settings
 
 from .client import run_chat
 from .gemini_queue import GeminiQueue, QueueFullError
+from .quota import BudgetExhaustedError, DailyBudget, UserCooldown
 from ..models import AIChatSettings, ChatMessage
 
 if TYPE_CHECKING:
@@ -22,6 +24,17 @@ log = logging.getLogger("ballsdex.packages.aichat")
 # hardcodes the word "countryballs" — which contradicts a reskinned collectible (e.g. "melodies").
 # We only feed the description to the AI if the owner actually customized it away from this.
 STOCK_ABOUT_DEFAULT = "Collect countryballs on Discord, exchange them and battle with friends!"
+
+# Shown when the owner's daily request budget is spent. Deliberately warm and specific about
+# *when* it comes back, because the alternative — the generic 429 line, over and over for hours —
+# reads as the bot being broken rather than resting.
+BUDGET_SPENT_REPLY = (
+    "I've used up my thinking budget for today — I'll be back to my chatty self tomorrow!"
+)
+
+# Reacting costs no API quota and doesn't add a message to the channel, so a user who is going too
+# fast still gets told, without the throttle itself becoming the spam.
+COOLDOWN_REACTION = "⏳"
 
 
 def _build_system_prompt(personality: str) -> str:
@@ -107,9 +120,23 @@ class AIChat(commands.Cog):
         # past its per-minute quota. Requests just wait their turn.
         self.queue = GeminiQueue()
         self.queue.start()
+        # Quota protection, both configured live from the settings row on each use.
+        self.cooldown = UserCooldown()
+        self.budget = DailyBudget()
 
     def cog_unload(self):
         self.queue.stop()
+
+    def _cooldown_retry_after(self, config: AIChatSettings, user_id: int) -> float:
+        """
+        Seconds this person must still wait, 0.0 if they may talk.
+
+        Both entry points share one bucket per person. Keeping them separate — as they were, with
+        /chat on a hardcoded decorator — means raising one limit just moves the traffic to the
+        other, and the decorator couldn't read the setting anyway.
+        """
+        self.cooldown.seconds = config.user_cooldown_seconds
+        return self.cooldown.retry_after(user_id)
 
     async def _get_settings(self) -> AIChatSettings | None:
         config = await AIChatSettings.objects.afirst()
@@ -131,7 +158,12 @@ class AIChat(commands.Cog):
                 allow_artwork=config.allow_artwork,
                 allow_events=config.allow_special_events,
                 allow_web_search=config.allow_web_search,
-                limiter=self.queue.limiter,
+                limiters=self.queue.limiters,
+                on_request=self.budget.record,
+                # Read once per turn from the budget's cache, which the pre-flight check has just
+                # refreshed from the database — so this survives a restart and costs no extra query.
+                exhausted_models=self.budget.exhausted_models,
+                on_daily_exhausted=self.budget.mark_exhausted,
             )
         )
 
@@ -183,6 +215,15 @@ class AIChat(commands.Cog):
         if not text.strip():
             return
 
+        # Both refusals below happen *before* the message is written to history: an unanswered
+        # user turn left in the log would be replayed as context on the next real reply, and once
+        # the daily budget is spent that would otherwise happen to every message for hours.
+        try:
+            await self.budget.check(config.daily_request_budget)
+        except BudgetExhaustedError:
+            await channel.send(BUDGET_SPENT_REPLY)
+            return
+
         await self._remember(channel_id, author.id, ChatMessage.Role.USER, f"{author.display_name}: {text}")
         history = await self._build_history(channel_id, config.max_history)
 
@@ -218,11 +259,33 @@ class AIChat(commands.Cog):
             content = content.replace(pattern, "")
         content = content.strip()
 
+        if not content:
+            return
+
+        # /chat has always had a per-user cooldown; this path had none, which made mentioning the
+        # bot the cheapest way to burn a shared free-tier key. The settings row is read before the
+        # cooldown is applied so the owner can retune or disable it without a restart, but it is
+        # the only query a throttled message costs — everything past here is skipped.
+        config = await self._get_settings()
+        if not config:
+            return
+        if self._cooldown_retry_after(config, message.author.id) > 0:
+            try:
+                await message.add_reaction(COOLDOWN_REACTION)
+            except discord.HTTPException:
+                # Missing Add Reactions, or the message vanished. The throttle still applied, and
+                # failing to signal it is not worth a log line on every rate-limited message.
+                pass
+            return
+        self.cooldown.stamp(message.author.id)
+
         await self._respond(message.channel, message.channel.id, message.author, content, is_dm=is_dm)
 
     @app_commands.command(name="chat")
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-    @app_commands.checks.cooldown(1, 5, key=lambda i: i.user.id)
+    # No @app_commands.checks.cooldown here on purpose: a decorator's interval is fixed at import
+    # time, so it could neither honour user_cooldown_seconds nor share a bucket with the mention
+    # path — and a per-path cooldown just relocates the spam. See _cooldown_retry_after.
     async def chat(self, interaction: discord.Interaction, message: str):
         """
         Chat with the bot directly, without needing to mention it.
@@ -242,6 +305,22 @@ class AIChat(commands.Cog):
         is_dm = interaction.guild is None
         if not is_dm and config.allowed_channels and channel_id not in config.allowed_channels:
             await interaction.followup.send("I can't chat in this channel.", ephemeral=True)
+            return
+
+        retry_after = self._cooldown_retry_after(config, interaction.user.id)
+        if retry_after > 0:
+            await interaction.followup.send(
+                # Rounded up, so "1s" never means "actually still 0.4s away, try again".
+                f"Give me a moment to catch up — try again in {math.ceil(retry_after)}s.",
+                ephemeral=True,
+            )
+            return
+        self.cooldown.stamp(interaction.user.id)
+
+        try:
+            await self.budget.check(config.daily_request_budget)
+        except BudgetExhaustedError:
+            await interaction.followup.send(BUDGET_SPENT_REPLY)
             return
 
         await self._remember(

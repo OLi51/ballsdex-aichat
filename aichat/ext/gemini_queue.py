@@ -36,6 +36,15 @@ class RateLimiter:
     def set_rate(self, requests_per_minute: int):
         self.min_interval = 60.0 / max(requests_per_minute, 1)
 
+    def wait_time(self) -> float:
+        """
+        Seconds until this bucket would let a request through, without taking the slot.
+
+        A peek, so the caller can compare buckets and pick the least congested one before
+        committing to a model. Never blocks and never reserves anything.
+        """
+        return max(0.0, self.min_interval - (time.monotonic() - self._last_call))
+
     async def acquire(self):
         """Block until it's safe to issue the next API request."""
         async with self._lock:
@@ -45,6 +54,62 @@ class RateLimiter:
             self._last_call = time.monotonic()
 
 
+class ModelLimiters:
+    """
+    One RateLimiter per model ID, plus congestion-aware ordering of the fallback chain.
+
+    The free tier meters requests per *model*, not per key — a 429 names its quota
+    `GenerateRequestsPerMinutePerProjectPerModel-FreeTier` and carries the model in
+    `quotaDimensions`. So two models in the chain are two independent 15/min buckets, and pacing
+    them through one shared gate threw away half the available throughput.
+
+    `order()` exploits that: when the primary's bucket is busy, a fallback whose bucket is idle
+    answers immediately instead of the turn stalling. Daily totals don't change (each model
+    already had its own daily pool) — the gain is entirely in requests per minute.
+    """
+
+    # Buckets are compared at whole-second resolution so that a trivially-sooner fallback never
+    # displaces the primary. Models are only reordered when the primary is congested enough that
+    # waiting for it would be visible to the user — below that, chain order (i.e. quality) wins.
+    ORDER_GRANULARITY = 1.0
+
+    def __init__(self, requests_per_minute: int = 12):
+        self._rpm = max(requests_per_minute, 1)
+        self._limiters: dict[str, RateLimiter] = {}
+
+    def set_rate(self, requests_per_minute: int):
+        self._rpm = max(requests_per_minute, 1)
+        for limiter in self._limiters.values():
+            limiter.set_rate(self._rpm)
+
+    def get(self, model: str) -> RateLimiter:
+        limiter = self._limiters.get(model)
+        if limiter is None:
+            limiter = RateLimiter(self._rpm)
+            self._limiters[model] = limiter
+        return limiter
+
+    def order(self, models: list[str], exhausted: set[str] | None = None) -> list[str]:
+        """
+        The chain re-sorted least-congested-first, ties keeping their original (quality) order.
+
+        `sorted` is stable, so equal buckets — the normal case on a quiet instance — leave the
+        list exactly as the owner configured it.
+
+        `exhausted` names models that have already reported their *daily* quota spent; they sort
+        behind everything else regardless of congestion. They are demoted rather than dropped,
+        because that belief comes from a single API response and could be wrong (a reset we
+        haven't seen, a transient mislabelled upstream) — last place costs one wasted request in
+        the rare case it's stale, while removing them outright could leave the chain empty and the
+        bot mute.
+        """
+        exhausted = exhausted or set()
+        return sorted(
+            models,
+            key=lambda m: (m in exhausted, int(self.get(m).wait_time() / self.ORDER_GRANULARITY)),
+        )
+
+
 class GeminiQueue:
     """
     Serializes every chat turn behind a single worker, so a shared API key (potentially reused
@@ -52,12 +117,12 @@ class GeminiQueue:
     `await queue.submit(...)` and transparently wait their turn.
 
     The queue provides ordering, concurrency of one, backpressure and a timeout. Per-minute
-    pacing is NOT done here — it belongs to `self.limiter`, which the chat client acquires
-    before each individual API request (see RateLimiter for why).
+    pacing is NOT done here — it belongs to `self.limiters`, which the chat client acquires from
+    before each individual API request (see RateLimiter and ModelLimiters for why).
     """
 
     def __init__(self, requests_per_minute: int = 12, max_queue_size: int = 30, job_timeout: float = 180.0):
-        self.limiter = RateLimiter(requests_per_minute)
+        self.limiters = ModelLimiters(requests_per_minute)
         self.max_queue_size = max_queue_size
         # Generous, because a turn's duration now includes the limiter waiting out the interval
         # before each of its requests: at 12/minute a six-round turn can legitimately spend most
@@ -68,7 +133,7 @@ class GeminiQueue:
         self._worker_task: asyncio.Task | None = None
 
     def set_rate(self, requests_per_minute: int):
-        self.limiter.set_rate(requests_per_minute)
+        self.limiters.set_rate(requests_per_minute)
 
     def start(self):
         if self._worker_task is None or self._worker_task.done():

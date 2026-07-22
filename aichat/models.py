@@ -59,11 +59,29 @@ class AIChatSettings(models.Model):
     )
     requests_per_minute = models.PositiveIntegerField(
         default=12,
-        help_text="Max Gemini API requests per minute across every server this bot is in. Keep it a bit "
-        "under your API key's actual quota (the free tier is 15/min). Note this counts API requests, not "
-        "replies: one reply costs one request, plus one more for each round of tool use, so a reply that "
-        "looks something up typically costs 2. At the default of 12 that's roughly 6 such replies a minute. "
-        "Raise this if you're on a paid plan.",
+        help_text="Max Gemini API requests per minute PER MODEL, across every server this bot is in. Keep it "
+        "a bit under your API key's actual quota (the free tier is 15/min). The free tier meters each model "
+        "separately, so a primary plus one fallback gives you two independent buckets — the bot prefers the "
+        "primary and only spills over to a fallback when the primary's bucket is busy. Note this counts API "
+        "requests, not replies: one reply costs one request, plus one more for each round of tool use, so a "
+        "reply that looks something up typically costs 2. Raise this if you're on a paid plan.",
+    )
+    user_cooldown_seconds = models.PositiveIntegerField(
+        default=10,
+        help_text="How long one person must wait between messages to the bot. Covers BOTH mentions/DMs and "
+        "/chat, sharing one budget per person — otherwise raising one just pushes the spam to the other. "
+        "This is about fairness, not quota: the rate limiter already stops the bot bursting past your "
+        "per-minute quota, but without a cooldown one fast talker queues up requests everybody else then "
+        "waits behind. Mentions sent too soon get a ⏳ reaction, /chat gets a quiet ephemeral note; neither "
+        "costs an API request. Set to 0 to disable.",
+    )
+    daily_request_budget = models.PositiveIntegerField(
+        default=0,
+        help_text="Stop making API requests after this many in one day, and reply with a friendly "
+        "'back tomorrow' message instead. 0 means no budget (the default — your API key's own quota is then "
+        "the only limit). Counts real API requests across all models, and resets at midnight US Pacific, "
+        "the same moment Google's free daily quotas do. Useful to guarantee the key survives a traffic "
+        "spike; the free tier gives roughly 500 requests/day per model.",
     )
     allowed_channel_ids = models.TextField(
         blank=True,
@@ -123,6 +141,35 @@ class AIChatSettings(models.Model):
             if m and m not in seen:
                 seen.append(m)
         return seen
+
+
+class DailyUsage(models.Model):
+    """
+    One row per (day, model): how many API requests were actually issued.
+
+    Persisted rather than counted in memory so the daily budget survives a restart — otherwise
+    every `docker compose up` would silently reset the guard rail, and a restart is precisely what
+    someone does when the bot starts misbehaving from quota exhaustion.
+    """
+
+    date = models.DateField(help_text="US Pacific date, matching when Google's daily quotas reset")
+    model = models.CharField(max_length=64, help_text="Gemini model ID the requests were sent to")
+    requests = models.PositiveIntegerField(default=0)
+    exhausted = models.BooleanField(
+        default=False,
+        help_text="Set when this model reported its DAILY quota spent. The model is then tried last "
+        "for the rest of the day instead of first, so the bot stops wasting a rejected request on it "
+        "every turn. Clears by itself tomorrow — a new day is a new row.",
+    )
+
+    class Meta:
+        db_table = "aichat_daily_usage"
+        constraints = (models.UniqueConstraint(fields=("date", "model"), name="aichat_usage_day_model"),)
+        ordering = ("-date", "model")
+        verbose_name_plural = "Daily usage"
+
+    def __str__(self) -> str:
+        return f"{self.date} {self.model}: {self.requests}"
 
 
 class ChatMessage(models.Model):

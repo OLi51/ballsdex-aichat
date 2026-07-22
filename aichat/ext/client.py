@@ -1,11 +1,13 @@
 import logging
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from .gemini_queue import RateLimiter
+from .gemini_queue import ModelLimiters
+from .quota import is_daily_quota_error
 from .tools import ToolContext, build_tools, dispatch
 
 log = logging.getLogger("ballsdex.packages.aichat")
@@ -43,7 +45,8 @@ async def _run_once(
     config: types.GenerateContentConfig,
     history: list[types.Content],
     ctx: ToolContext,
-    limiter: RateLimiter | None = None,
+    limiters: ModelLimiters | None = None,
+    on_request: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, Path | None]:
     """One model+toolset attempt, including the function-calling loop."""
     ctx.pending_attachment = None  # reset in case a prior attempt half-populated it
@@ -57,9 +60,14 @@ async def _run_once(
         round_config = _without_tools(config) if last_round else config
 
         # Every iteration is a separate API request, and so is every retry against a fallback
-        # model — so the gate lives here, not around the turn as a whole.
-        if limiter is not None:
-            await limiter.acquire()
+        # model — so the gate lives here, not around the turn as a whole. Each model has its own
+        # bucket, because the free tier meters per model.
+        if limiters is not None:
+            await limiters.get(model).acquire()
+        # Counted before the call, not after: a request that 429s or times out has still been
+        # made, and a budget that only counts successes would keep spending after the key is done.
+        if on_request is not None:
+            await on_request(model)
         response = await client.aio.models.generate_content(model=model, contents=contents, config=round_config)
         calls = response.function_calls
         if not calls:
@@ -89,7 +97,10 @@ async def run_chat(
     allow_artwork: bool = False,
     allow_events: bool = False,
     allow_web_search: bool = False,
-    limiter: RateLimiter | None = None,
+    limiters: ModelLimiters | None = None,
+    on_request: Callable[[str], Awaitable[None]] | None = None,
+    exhausted_models: set[str] | None = None,
+    on_daily_exhausted: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, Path | None]:
     """
     Runs one full turn of conversation against Gemini and returns (reply text, optional image
@@ -97,7 +108,12 @@ async def run_chat(
 
     Robustness:
     - `models` is tried in order; if one hits its quota or errors, the next is used, so the bot
-      keeps working after the primary model's daily allowance runs out.
+      keeps working after the primary model's daily allowance runs out. That order is first
+      re-sorted by how congested each model's rate-limit bucket is, so a busy primary yields to an
+      idle fallback rather than making the whole turn wait — see ModelLimiters.order.
+    - A model that reports its *daily* quota spent is remembered and sorted last for the rest of
+      the day, so the chain stops opening every turn with a request that can only be rejected.
+      Per-minute 429s are deliberately not treated this way; see is_daily_quota_error.
     - Web search is only attached to a model that actually supports it (see model_supports_search),
       so we never waste a call grounding a model whose search quota is zero. If a supported model's
       grounded call still fails, the same model is retried without search before moving on.
@@ -116,7 +132,7 @@ async def run_chat(
     # Build the ordered list of (model, toolset) attempts. For a search-capable model with web
     # search enabled, try it WITH search first, then plain; every model always has a plain attempt.
     attempts: list[tuple[str, list[types.Tool]]] = []
-    for model in models:
+    for model in limiters.order(models, exhausted_models) if limiters else models:
         if allow_web_search and model_supports_search(model):
             attempts.append((model, base_tools + [types.Tool(google_search=types.GoogleSearch())]))
         attempts.append((model, base_tools))
@@ -126,10 +142,21 @@ async def run_chat(
         config = types.GenerateContentConfig(system_instruction=system_prompt, tools=tools or None)
         try:
             return await _run_once(
-                client=client, model=model, config=config, history=history, ctx=ctx, limiter=limiter
+                client=client,
+                model=model,
+                config=config,
+                history=history,
+                ctx=ctx,
+                limiters=limiters,
+                on_request=on_request,
             )
         except (genai_errors.ClientError, genai_errors.ServerError) as e:
             last_exc = e
+            # A model that says its *daily* quota is gone will say so again on every turn until
+            # Pacific midnight. Remember it, so the chain stops leading with a model that can only
+            # reject it — the per-minute limiter can't help here, since the problem isn't pacing.
+            if on_daily_exhausted is not None and is_daily_quota_error(e):
+                await on_daily_exhausted(model)
             log.warning(f"Gemini attempt failed (model={model}), trying next: {e}")
             continue
 
