@@ -10,9 +10,12 @@ through function calling, so it answers from your bot's real data instead of mak
 - **Talk naturally** — mention the bot, DM it, or run `/chat`. `/forget` clears a channel's memory.
 - **Knows your bot** — the bot's name and collectible name (and your `/about` description, if you've
   customized it) are baked into every request, so the AI stays in character as *your* bot.
-- **Reads live game data** — the speaker's own collection summary is always available (it can never
-  read anyone else's). Collectible stats/search and artwork are separate, **off-by-default** tools so
-  rare or unreleased collectibles can't be leaked; even when enabled, only released collectibles show.
+- **Reads live game data** — the speaker's own collection is always available (it can never read
+  anyone else's), and the AI picks how to rank it based on what was asked: rarest, most owned,
+  strongest, most recent, and so on — with per-entry rarity/attack/health plus overall completion,
+  so it can answer "what's my rarest?" as naturally as "what do I have most of?". Collectible
+  stats/search and artwork are separate, **off-by-default** tools so rare or unreleased collectibles
+  can't be leaked; even when enabled, only released collectibles show.
 - **Optional web search** — off by default; when on, uses Gemini's built-in Google Search grounding to
   answer with current information.
 - **Always-on model fallback** — list backup models; if the primary hits its quota or errors, the next
@@ -27,7 +30,7 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.2.3"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.3.0"
 path = "aichat"
 enabled = true
 ```

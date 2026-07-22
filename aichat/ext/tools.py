@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from django.db.models import Count
+from django.db.models import Count, Max
 from google.genai import types
 
 from bd_models.models import Ball, BallInstance
@@ -28,32 +28,70 @@ class ToolContext:
     pending_attachment: Path | None = None
 
 
-async def get_my_collection(ctx: ToolContext, limit: int = 10) -> dict:
+# Which axis the model wants the collection ranked by. Remember `Ball.rarity` is a spawn
+# WEIGHT: a lower number means the collectible spawns less often, i.e. is rarer — so "rarest"
+# sorts ascending, not descending.
+COLLECTION_SORTS = {
+    "count": "-count",
+    "rarest": "ball__rarity",
+    "commonest": "-ball__rarity",
+    "recent": "-latest_catch",
+    "oldest": "latest_catch",
+    "strongest": "-ball__attack",
+    "toughest": "-ball__health",
+}
+MAX_COLLECTION_ROWS = 100
+
+
+async def get_my_collection(ctx: ToolContext, sort_by: str = "count", limit: int = 25) -> dict:
+    empty = {
+        "total_owned": 0,
+        "unique_species": 0,
+        "species_available": 0,
+        "completion_percent": 0.0,
+        "sorted_by": sort_by,
+        "results": [],
+        "collectible_name": settings.plural_collectible_name,
+    }
     try:
         player = await PlayerModel.objects.aget(discord_id=ctx.discord_id)
     except PlayerModel.DoesNotExist:
-        return {"total_owned": 0, "unique_species": 0, "top_by_count": []}
+        return empty
 
-    total = await BallInstance.objects.filter(player=player, deleted=False).acount()
+    order = COLLECTION_SORTS.get(sort_by, "-count")
+    limit = max(1, min(limit, MAX_COLLECTION_ROWS))
 
-    # Grouped DB-side instead of pulling instances into Python to tally: correct regardless of
-    # collection size (the old [:500] slice silently truncated and skewed results for players
-    # with more than 500 instances) and far cheaper (one query returning `limit` rows instead of
-    # up to 500 fully-joined rows deserialized just to count them).
+    # Grouped DB-side rather than tallying instances in Python: correct at any collection size
+    # and returns only `limit` rows instead of deserializing the whole collection. The default
+    # manager already excludes soft-deleted rows, so no explicit `deleted` filter is needed.
     grouped = (
-        BallInstance.objects.filter(player=player, deleted=False)
-        .values("ball_id", "ball__short_name", "ball__country")
-        .annotate(count=Count("id"))
-        .order_by("-count")
+        BallInstance.objects.filter(player=player)
+        .values("ball_id", "ball__short_name", "ball__country", "ball__rarity", "ball__attack", "ball__health")
+        .annotate(count=Count("id"), latest_catch=Max("catch_date"))
+        .order_by(order)
     )
     unique_species = await grouped.acount()
-    top = [row async for row in grouped[:limit]]
+    rows = [row async for row in grouped[:limit]]
+
+    total = await BallInstance.objects.filter(player=player).acount()
+    species_available = await Ball.enabled_objects.acount()
 
     return {
         "total_owned": total,
         "unique_species": unique_species,
-        "top_by_count": [
-            {"name": row["ball__short_name"] or row["ball__country"], "count": row["count"]} for row in top
+        "species_available": species_available,
+        "completion_percent": round(unique_species / species_available * 100, 1) if species_available else 0.0,
+        "sorted_by": sort_by if sort_by in COLLECTION_SORTS else "count",
+        "results": [
+            {
+                "name": row["ball__short_name"] or row["ball__country"],
+                "count": row["count"],
+                "rarity": row["ball__rarity"],
+                "attack": row["ball__attack"],
+                "health": row["ball__health"],
+                "last_caught": row["latest_catch"].isoformat() if row["latest_catch"] else None,
+            }
+            for row in rows
         ],
         "collectible_name": settings.plural_collectible_name,
     }
@@ -103,11 +141,28 @@ async def get_ball_image(ctx: ToolContext, name: str) -> dict:
 
 _DECL_COLLECTION = types.FunctionDeclaration(
     name="get_my_collection",
-    description="Get a summary of the CURRENT SPEAKER's own collection: total owned, unique species, "
-    "and the top entries by how many copies are owned. Cannot be used to look at anyone else's collection.",
+    description="Get a summary of the CURRENT SPEAKER's own collection. Always returns overall totals "
+    "(how many they own, how many distinct kinds, and completion against everything available), plus a "
+    "ranked list of what they own — each entry including how many copies, its rarity, attack and health, "
+    "and when they last caught one. Choose `sort_by` to match what was actually asked: their rarest, "
+    "their most/least numerous, their strongest, or their most recent catches. Cannot be used to look at "
+    "anyone else's collection.",
     parameters_json_schema={
         "type": "object",
-        "properties": {"limit": {"type": "integer", "description": "Max number of top entries to return, default 10"}},
+        "properties": {
+            "sort_by": {
+                "type": "string",
+                "enum": sorted(COLLECTION_SORTS),
+                "description": "How to rank the results. 'count' = most copies owned (default), "
+                "'commonest'/'rarest' = by how often the collectible spawns, 'recent'/'oldest' = by when "
+                "they last caught one, 'strongest'/'toughest' = by attack/health.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": f"How many entries to return, 1-{MAX_COLLECTION_ROWS}, default 25. Ask for "
+                "more when the user wants a broad list, fewer for a quick highlight.",
+            },
+        },
     },
 )
 
