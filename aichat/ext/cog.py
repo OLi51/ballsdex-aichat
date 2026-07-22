@@ -129,6 +129,7 @@ class AIChat(commands.Cog):
                 discord_id=discord_id,
                 allow_stats=config.allow_stats_lookup,
                 allow_artwork=config.allow_artwork,
+                allow_events=config.allow_special_events,
                 allow_web_search=config.allow_web_search,
             )
         )

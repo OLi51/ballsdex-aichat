@@ -86,6 +86,12 @@ class AIChatSettings(models.Model):
         help_text="Let the AI fetch and post a released collectible's artwork in chat. OFF by default to "
         "avoid leaking images of rare or unreleased collectibles.",
     )
+    allow_special_events = models.BooleanField(
+        default=False,
+        help_text="Let the AI list your special events — every event that isn't hidden, each marked as "
+        "currently active or not. Hidden events are never included. OFF by default: even a non-hidden "
+        "event you haven't announced yet would be listed.",
+    )
     allow_web_search = models.BooleanField(
         default=False,
         help_text="Let the AI search the web (via Gemini's built-in Google Search grounding) to answer with "

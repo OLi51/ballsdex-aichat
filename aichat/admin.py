@@ -23,7 +23,7 @@ class AIChatSettingsAdmin(admin.ModelAdmin):
         ),
         (
             "Data exposure (off by default — avoid leaking rare/unreleased collectibles)",
-            {"fields": ("allow_stats_lookup", "allow_artwork", "allow_web_search")},
+            {"fields": ("allow_stats_lookup", "allow_artwork", "allow_special_events", "allow_web_search")},
         ),
     )
 

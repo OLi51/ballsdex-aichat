@@ -9,7 +9,11 @@ from .tools import ToolContext, build_tools, dispatch
 
 log = logging.getLogger("ballsdex.packages.aichat")
 
-MAX_TOOL_ROUNDS = 4
+# A single question can legitimately chain several lookups — e.g. find the rarest species, then
+# that species' individual copies, then its base stats, then its artwork. Four rounds is enough
+# for that exact chain and nothing more, so one extra exploratory call would truncate the answer.
+# Rounds only cost a request when the model actually uses them; parallel calls share a round.
+MAX_TOOL_ROUNDS = 6
 FALLBACK_REPLY = "I got a bit tangled up thinking about that one — mind trying again?"
 
 
@@ -48,7 +52,10 @@ async def _run_once(
         for call in calls:
             result = await dispatch(call.name, dict(call.args or {}), ctx)
             response_parts.append(types.Part.from_function_response(name=call.name, response=result))
-        contents.append(types.Content(role="tool", parts=response_parts))
+        # Function results go back as role="user", NOT "tool". Gemini 3.x rejects "tool" outright
+        # ("Role 'tool' is not supported"), which silently burned the primary model on every
+        # tool-using request and left anyone without a fallback model with no tool calls at all.
+        contents.append(types.Content(role="user", parts=response_parts))
 
     return FALLBACK_REPLY, ctx.pending_attachment
 
@@ -62,6 +69,7 @@ async def run_chat(
     discord_id: int,
     allow_stats: bool = False,
     allow_artwork: bool = False,
+    allow_events: bool = False,
     allow_web_search: bool = False,
 ) -> tuple[str, Path | None]:
     """
@@ -75,11 +83,11 @@ async def run_chat(
       so we never waste a call grounding a model whose search quota is zero. If a supported model's
       grounded call still fails, the same model is retried without search before moving on.
 
-    Tool exposure: the collection tool is always available (speaker's own data only); stats/search
-    and artwork are gated by the owner's settings.
+    Tool exposure: the collection tools are always available (speaker's own data only); events,
+    stats/search and artwork are gated by the owner's settings.
     """
     client = genai.Client(api_key=api_key)
-    decls, allowed = build_tools(allow_stats=allow_stats, allow_artwork=allow_artwork)
+    decls, allowed = build_tools(allow_stats=allow_stats, allow_artwork=allow_artwork, allow_events=allow_events)
     ctx = ToolContext(discord_id=discord_id, allowed=allowed)
 
     base_tools: list[types.Tool] = []

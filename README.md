@@ -11,11 +11,24 @@ through function calling, so it answers from your bot's real data instead of mak
 - **Knows your bot** — the bot's name and collectible name (and your `/about` description, if you've
   customized it) are baked into every request, so the AI stays in character as *your* bot.
 - **Reads live game data** — the speaker's own collection is always available (it can never read
-  anyone else's), and the AI picks how to rank it based on what was asked: rarest, most owned,
-  strongest, most recent, and so on — with per-entry rarity/attack/health plus overall completion,
-  so it can answer "what's my rarest?" as naturally as "what do I have most of?". Collectible
-  stats/search and artwork are separate, **off-by-default** tools so rare or unreleased collectibles
-  can't be leaked; even when enabled, only released collectibles show.
+  anyone else's), at two levels of detail the AI picks between:
+  - *Overview* — one entry per kind of collectible, with how many copies, rarity, attack/health and
+    when it was last caught, plus overall totals and completion percentage.
+  - *Individual copies* — one entry per specific collectible, with its own ID, its personal
+    attack/health including that copy's bonus roll, its special and that special's emoji, plus
+    favorite and tradeable flags.
+
+  Either can be ranked by whatever the question calls for (rarest, most owned, strongest, best
+  roll, most recent…) and filtered by name, specials-only or favorites-only — so "what's my
+  rarest?", "what do I have most of?" and "what's my best-rolled one?" are all answered from real
+  data. Collectible stats/search and artwork are separate, **off-by-default** tools so rare or
+  unreleased collectibles can't be leaked; even when enabled, only released collectibles show.
+- **Knows your events** — optionally (off by default), it can list your special events, each marked
+  active or not, so "what's on right now?" and "did I miss that one?" both get real answers. Hidden
+  events are never included.
+- **Currency-aware** — if you've configured a currency, it can tell the speaker their balance in
+  your currency's own name. If you haven't (most instances), the tool isn't offered at all — no
+  setup, no stray mentions of a currency your game doesn't have.
 - **Optional web search** — off by default; when on, uses Gemini's built-in Google Search grounding to
   answer with current information.
 - **Always-on model fallback** — list backup models; if the primary hits its quota or errors, the next
@@ -30,12 +43,31 @@ Add this to your instance's `config/extra.toml`:
 
 ```toml
 [[ballsdex.packages]]
-location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.3.0"
+location = "git+https://github.com/OLi51/ballsdex-aichat.git@1.4.0"
 path = "aichat"
 enabled = true
 ```
 
 Then `docker compose build` and run migrations as usual (they run automatically on `docker compose up`).
+
+### Updating
+
+**The latest tag is always the stable one** — every tag is a release that ran on a live instance
+before being cut. There is no unstable or pre-release channel; `main` between tags may be
+mid-refactor, so pin a tag rather than a branch.
+
+There is no auto-update: packages are installed when the Docker image is built, and the bot never
+fetches anything at runtime. To move to a new version, **change the `@<version>` in the snippet
+above**, then:
+
+```
+docker compose build
+docker compose down && docker compose up -d
+```
+
+If you forget to bump the version in `extra.toml`, nothing changes — the pinned tag is what gets
+installed. Check the [releases page](https://github.com/OLi51/ballsdex-aichat/releases) for what's
+new; anything that needs a settings change or a migration is called out in the release notes.
 
 ## Setup
 
@@ -83,15 +115,31 @@ search. Free web search realistically isn't available alongside the high-through
 
 ### Data exposure (off by default)
 
-Three tools are disabled until you turn them on, so a curious user can't coax the AI into leaking things:
+These tools are disabled until you turn them on, so a curious user can't coax the AI into leaking things:
 
 - **`allow_stats_lookup`** — look up and search released collectibles' stats (rarity, health, attack,
   capacity).
 - **`allow_artwork`** — fetch and post a released collectible's artwork in chat.
+- **`allow_special_events`** — list your special events (see below).
 - **`allow_web_search`** — let the AI search the web via Gemini's Google Search grounding.
 
-The player's own-collection summary is always available and is unaffected by these. Even with the tools
-on, only released (enabled) collectibles are ever exposed — never rare, unreleased, or admin-only ones.
+The player's own data — collection, individual copies, and balance — is always available and is
+unaffected by these; it is bound to the speaker's Discord ID, so the AI can never be talked into
+reading someone else's. Even with the tools on, only released (enabled) collectibles are ever
+exposed — never rare, unreleased, or admin-only ones.
+
+#### Special events
+
+With `allow_special_events` on, the AI can list your events — name, emoji, catch phrase, whether
+those cards are tradeable, start/end dates, and an `active` flag. `active` uses the *same* window
+core uses to decide what can actually spawn, so it matches what players can really catch; an event
+with no dates counts as permanently active.
+
+**Events that aren't hidden are all returned**, finished and not-yet-started included, each flagged
+accordingly — that's deliberate, so the bot can say "that ended last Tuesday" instead of pretending
+an event never existed. It's also why the toggle defaults to off: a non-hidden event you've created
+but not announced yet would show up. If you stage events in advance, either keep them `hidden` until
+launch (they are *never* listed, toggle or not) or leave this off.
 
 ### Rate limiting
 
